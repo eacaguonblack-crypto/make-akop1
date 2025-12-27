@@ -3,10 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Liquid Art Filter - Mr. Parker</title>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <title>Instant Liquid Filter - Mr. Parker</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js" crossorigin="anonymous"></script>
 
     <style>
@@ -16,52 +13,36 @@
             width: 100%;
             height: 100%;
             overflow: hidden;
-            background-color: #1a0515; /* Deep purple base */
+            background-color: #1a0515;
         }
 
-        /* The main canvas where we draw the art */
         canvas {
             display: block;
             width: 100%;
             height: 100%;
-            transform: scaleX(-1); /* Mirror the webcam like a real mirror */
+            transform: scaleX(-1); /* Mirror effect */
         }
-
-        /* Loading indicator */
-        #loading {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            color: #FF00FF;
-            font-family: monospace;
-            font-size: 1.5rem;
-            background: rgba(0,0,0,0.8);
-            padding: 20px;
-            border: 2px solid #FF00FF;
-            z-index: 100;
-        }
+        
+        /* Hide the raw video element */
+        video { display: none; }
     </style>
 </head>
 <body>
 
-    <div id="loading">Initializing Camera & AI...</div>
-    
-    <video id="input_video" style="display: none"></video>
-    
+    <video id="input_video" playsinline autoplay muted></video>
     <canvas id="output_canvas"></canvas>
 
 <script>
     const videoElement = document.getElementById('input_video');
     const canvasElement = document.getElementById('output_canvas');
     const ctx = canvasElement.getContext('2d');
-    const loading = document.getElementById('loading');
+
+    let width, height;
+    let segmentationResults = null; // Stores AI result once ready
 
     // ==========================================
-    // 1. LIQUID BACKGROUND LOGIC (From previous step)
+    // 1. LIQUID BACKGROUND SYSTEM
     // ==========================================
-    let width, height;
-    
     const config = {
         blobCount: 8,
         colors: ['#FF00FF', '#FF69B4', '#C71585', '#FF1493', '#9400D3'],
@@ -73,7 +54,7 @@
     class Blob {
         constructor() { this.init(); }
         init() {
-            // Spawn mostly near edges to frame the user
+            // Logic to frame the center
             const edge = Math.floor(Math.random() * 4);
             if (edge === 0) { this.x = Math.random() * width; this.y = -50; }
             else if (edge === 1) { this.x = Math.random() * width; this.y = height + 50; }
@@ -82,8 +63,8 @@
 
             this.radius = Math.random() * (width * 0.1) + 50;
             this.color = config.colors[Math.floor(Math.random() * config.colors.length)];
-            this.vx = (Math.random() - 0.5) * 1;
-            this.vy = (Math.random() - 0.5) * 1;
+            this.vx = (Math.random() - 0.5) * 1.5;
+            this.vy = (Math.random() - 0.5) * 1.5;
             
             this.points = [];
             this.numPoints = 8;
@@ -120,27 +101,15 @@
         }
     }
 
-    function resize() {
-        width = window.innerWidth;
-        height = window.innerHeight;
-        canvasElement.width = width;
-        canvasElement.height = height;
-        blobs = [];
-        for(let i=0; i<config.blobCount; i++) blobs.push(new Blob());
-    }
-    window.addEventListener('resize', resize);
-    resize();
-
     // ==========================================
-    // 2. MEDIAPIPE SEGMENTATION LOGIC
+    // 2. RENDERING PIPELINE (The "Filter")
     // ==========================================
-    
-    function onResults(results) {
-        loading.style.display = 'none';
+    function drawCameraFrame() {
+        if (videoElement.readyState < 2) return; // Wait for video data
 
-        // A. Draw the Liquid Background First
+        // A. Draw Background Blobs
         ctx.globalCompositeOperation = 'source-over';
-        ctx.fillStyle = '#1a0515'; // Dark purple background
+        ctx.fillStyle = '#1a0515';
         ctx.fillRect(0, 0, width, height);
 
         const time = Date.now();
@@ -149,45 +118,169 @@
             blob.draw(ctx, time * config.speed);
         });
 
-        // B. Prepare the User Mask (The Cutout)
-        // We use the segmentation mask provided by MediaPipe
-        ctx.globalCompositeOperation = 'destination-out'; 
-        ctx.beginPath();
-        // Draw the segmentation mask onto the canvas to "punch a hole" in the liquid BG?
-        // Actually, we want to draw the user ON TOP.
+        // B. Apply The "Parker Filter"
+        // If AI is ready (segmentationResults exists), we mask the background.
+        // If not ready yet, we just draw the whole frame so user sees themselves instantly.
         
-        // Let's switch strategies:
-        // 1. Draw Liquid BG (Done above)
-        // 2. Draw the User, but ONLY where the mask says they are.
-        
-        ctx.globalCompositeOperation = 'source-over';
-
-        // We create a temporary canvas to process the user video style
-        // This is where we apply the "Magenta/Pink Filter" to you
-        // For performance in a single file, we will use composite blending.
-        
-        // Draw the mask (The white silhouette of the user)
         ctx.save();
-        ctx.drawImage(results.segmentationMask, 0, 0, width, height);
         
-        // Only keep the pixels that overlap with the mask (The User)
-        ctx.globalCompositeOperation = 'source-in';
-        
-        // Draw the webcam video into the masked area
-        ctx.drawImage(results.image, 0, 0, width, height);
-        
-        // C. Apply "Art Style" to the User
-        // We want to make the user look like pink/purple vector art.
-        
-        // 1. Apply a purple tint to dark areas
-        ctx.globalCompositeOperation = 'multiply';
+        if (segmentationResults) {
+            // --- AI MODE (Cutout) ---
+            // 1. Create the mask
+            ctx.globalCompositeOperation = 'destination-out';
+            ctx.drawImage(segmentationResults.segmentationMask, 0, 0, width, height);
+            
+            // 2. Draw User inside the mask
+            ctx.globalCompositeOperation = 'source-over'; // Reset to draw user
+            // We need to re-crop the user. This is tricky in one canvas.
+            // Simplified: We draw the user *only where* the mask was NOT drawn? 
+            // Actually, standard approach:
+            
+            // Draw the user masked:
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.drawImage(segmentationResults.image, 0, 0, width, height);
+            
+            // Re-apply the mask to "cut" the background blobbies out of the user area? 
+            // No, we want User ON TOP of background.
+            
+            // Let's do the "Cutout" composite trick:
+            // 1. Draw User Image
+            // 2. Multiply by Mask (User becomes visible, BG becomes transparent)
+            // But we already drew the blobs...
+            
+            // Better Manual Approach for Single Canvas:
+            // 1. Draw Blobs (Done)
+            // 2. Draw Segmentation Mask into a temp canvas or use composite:
+            //    (Too complex for high FPS).
+            
+            // Simple approach: Just draw the user on top, but use the mask to control opacity.
+            // Since we don't have a temp canvas in this block, we will just draw the user
+            // over the whole screen, but use 'destination-in' on the mask.
+            // Wait, that erases the blobs.
+            
+            // FIX: We must just draw the user image, but before that, 
+            // we assume the user fills the screen. 
+            // We can't do perfect masking without an offscreen canvas in 2D context easily
+            // without erasing the background.
+            
+            // COMPROMISE FOR SPEED/SINGLE-FILE:
+            // Draw the user fully, then apply the stylized filter.
+            // The "Cutout" is hard without a second canvas.
+            // Let's use the provided `segmentationMask` to Overwrite the background?
+            
+            // Let's use the mask to *erase* the user area from the blobs? 
+            // No, we want the user there.
+            
+            // CORRECT COMPOSITE STACK:
+            // 1. Draw Blobs.
+            // 2. Save Context.
+            // 3. Clip based on Mask? (Canvas doesn't support mask clipping easily).
+            // 4. Draw User.
+            
+            // We will just draw the raw video, heavily stylized, 
+            // and rely on the "Liquid" aesthetic to merge it.
+            // BUT, if we want the "Cutout", we really need that mask.
+            
+            // Let's use the mask to make the BACKGROUND (non-user) pixels transparent on the USER layer.
+            // We need an offscreen canvas to process the user frame.
+            offscreenCtx.clearRect(0, 0, width, height);
+            offscreenCtx.drawImage(segmentationResults.segmentationMask, 0, 0, width, height);
+            offscreenCtx.globalCompositeOperation = 'source-in';
+            offscreenCtx.drawImage(segmentationResults.image, 0, 0, width, height);
+            
+            // Now offscreenCanvas contains ONLY the user.
+            // Draw it onto the main canvas.
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.drawImage(offscreenCanvas, 0, 0);
+            
+        } else {
+            // --- INSTANT MODE (Loading...) ---
+            // Just draw the video over the whole screen with opacity
+            // so we can see the blobs behind (Ghost effect) or just full video.
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.drawImage(videoElement, 0, 0, width, height);
+        }
+
+        // C. Apply Stylization (Pink/Purple Tint)
+        // This applies to whatever user video is visible (Cutout or Full)
+        ctx.globalCompositeOperation = 'multiply'; // Darkens
         ctx.fillStyle = '#ff00ff'; 
         ctx.fillRect(0, 0, width, height);
-
-        // 2. Add brightness/contrast to pop
-        ctx.globalCompositeOperation = 'screen';
-        ctx.globalAlpha = 0.5;
-        ctx.drawImage(results.image, 0, 0, width, height); // Layer video again for highlights
-        ctx.globalAlpha = 1.0;
         
-        // 3. Optional
+        ctx.globalCompositeOperation = 'screen'; // Brightens
+        ctx.globalAlpha = 0.4;
+        if(segmentationResults) {
+             ctx.drawImage(offscreenCanvas, 0, 0); // Boost user brightness
+        } else {
+             ctx.drawImage(videoElement, 0, 0);
+        }
+        ctx.globalAlpha = 1.0;
+
+        ctx.restore();
+    }
+
+    // ==========================================
+    // 3. INITIALIZATION & LOOP
+    // ==========================================
+    
+    // Offscreen canvas helper for masking
+    const offscreenCanvas = document.createElement('canvas');
+    const offscreenCtx = offscreenCanvas.getContext('2d');
+
+    function resize() {
+        width = window.innerWidth;
+        height = window.innerHeight;
+        canvasElement.width = width;
+        canvasElement.height = height;
+        offscreenCanvas.width = width;
+        offscreenCanvas.height = height;
+        
+        blobs = [];
+        for(let i=0; i<config.blobCount; i++) blobs.push(new Blob());
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // 1. Start the visual loop immediately (No waiting for Camera)
+    function loop() {
+        drawCameraFrame();
+        requestAnimationFrame(loop);
+    }
+    loop();
+
+    // 2. Start Camera immediately
+    navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720, facingMode: "user" } })
+        .then(stream => {
+            videoElement.srcObject = stream;
+            // Once video plays, the loop above will start showing it
+        })
+        .catch(err => console.error("Camera Error:", err));
+
+    // 3. Load AI in background
+    const selfieSegmentation = new SelfieSegmentation({locateFile: (file) => {
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`;
+    }});
+
+    selfieSegmentation.setOptions({
+        modelSelection: 1,
+        minDetectionConfidence: 0.5,
+        selfieMode: true
+    });
+
+    selfieSegmentation.onResults(results => {
+        // Update our global variable with the latest AI data
+        segmentationResults = results;
+    });
+
+    // Feed video to AI constantly
+    async function sendToAI() {
+        if (videoElement.readyState >= 2) {
+            await selfieSegmentation.send({image: videoElement});
+        }
+        requestAnimationFrame(sendToAI);
+    }
+    sendToAI();
+
+</script>
+</body>
+</html>
