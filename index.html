@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Liquid Magenta Background</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #1a0515; /* Very dark purple/black base */
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        /* Optional: A placeholder for your "Central Subject" to show the framing effect */
+        .center-content {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-family: sans-serif;
+            font-size: 2rem;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 0.2em;
+            pointer-events: none; /* Let clicks pass through */
+            text-shadow: 0 4px 10px rgba(0,0,0,0.5);
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="center-content">
+        Subject Here
+    </div>
+
+    <canvas id="liquidCanvas"></canvas>
+
+<script>
+    const canvas = document.getElementById('liquidCanvas');
+    const ctx = canvas.getContext('2d');
+
+    let width, height;
+    
+    // Configuration for the blobs
+    const config = {
+        blobCount: 6,
+        colors: [
+            '#FF00FF', // Bright Magenta
+            '#FF69B4', // Hot Pink
+            '#C71585', // Medium Violet Red
+            '#FF1493', // Deep Pink
+            '#9400D3'  // Dark Violet (for depth)
+        ],
+        speed: 0.002 // Global animation speed
+    };
+
+    let blobs = [];
+
+    // Helper: Random range
+    function random(min, max) {
+        return Math.random() * (max - min) + min;
+    }
+
+    // The Blob Class
+    class Blob {
+        constructor() {
+            this.init();
+        }
+
+        init() {
+            // Position blobs mostly around the edges to "frame" the center
+            // We divide the screen into quadrants or edges to ensure distribution
+            const edge = Math.floor(Math.random() * 4);
+            
+            if (edge === 0) { // Top
+                this.x = random(0, width);
+                this.y = random(-100, height * 0.3);
+            } else if (edge === 1) { // Bottom
+                this.x = random(0, width);
+                this.y = random(height * 0.7, height + 100);
+            } else if (edge === 2) { // Left
+                this.x = random(-100, width * 0.3);
+                this.y = random(0, height);
+            } else { // Right
+                this.x = random(width * 0.7, width + 100);
+                this.y = random(0, height);
+            }
+
+            this.radius = random(width * 0.15, width * 0.35); // Responsive size
+            this.color = config.colors[Math.floor(Math.random() * config.colors.length)];
+            
+            // Movement vectors (slow drift)
+            this.vx = random(-0.5, 0.5);
+            this.vy = random(-0.5, 0.5);
+
+            // Organic Shape Properties
+            this.points = [];
+            this.numPoints = 8; // Number of anchor points for the shape
+            this.angleStep = (Math.PI * 2) / this.numPoints;
+            
+            // Initialize points with random phase offsets for the wave motion
+            for (let i = 0; i < this.numPoints; i++) {
+                this.points.push({
+                    angle: this.angleStep * i,
+                    speed: random(0.02, 0.05), // How fast this point pulses
+                    offset: random(0, Math.PI * 2), // Starting phase
+                    volatility: random(10, 50) // How much the radius changes
+                });
+            }
+        }
+
+        update(time) {
+            // Drift the center
+            this.x += this.vx;
+            this.y += this.vy;
+
+            // Bounce off outer bounds (keep them generally on screen but loosely)
+            if (this.x < -200 || this.x > width + 200) this.vx *= -1;
+            if (this.y < -200 || this.y > height + 200) this.vy *= -1;
+        }
+
+        draw(ctx, time) {
+            ctx.fillStyle = this.color;
+            ctx.beginPath();
+
+            // Calculate the first point
+            const firstP = this.getPointOnCircumference(0, time);
+            ctx.moveTo(firstP.x, firstP.y);
+
+            // Draw curves between points using Quadratic Bezier curves
+            // to make it look smooth and organic (liquid)
+            for (let i = 0; i <= this.numPoints; i++) {
+                // Get current point and next point (modulo for wrapping)
+                const p1 = this.getPointOnCircumference(i % this.numPoints, time);
+                const p2 = this.getPointOnCircumference((i + 1) % this.numPoints, time);
+
+                // Calculate the midpoint between p1 and p2
+                const midX = (p1.x + p2.x) / 2;
+                const midY = (p1.y + p2.y) / 2;
+
+                // Curve to the midpoint using p1 as the control point
+                ctx.quadraticCurveTo(p1.x, p1.y, midX, midY);
+            }
+
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        // Calculate specific x/y for a point on the blob's edge based on time
+        getPointOnCircumference(index, time) {
+            const p = this.points[index];
+            // Sine wave modulation for the radius creates the "breathing/liquid" effect
+            const r = this.radius + Math.sin(time * p.speed + p.offset) * p.volatility;
+            
+            return {
+                x: this.x + Math.cos(p.angle) * r,
+                y: this.y + Math.sin(p.angle) * r
+            };
+        }
+    }
+
+    function init() {
+        resize();
+        blobs = [];
+        for (let i = 0; i < config.blobCount; i++) {
+            blobs.push(new Blob());
+        }
+        loop(0);
+    }
+
+    function resize() {
+        width = window.innerWidth;
+        height = window.innerHeight;
+        canvas.width = width;
+        canvas.height = height;
+    }
+
+    function loop(timestamp) {
+        // Clear screen
+        ctx.clearRect(0, 0, width, height);
+
+        // Optional: Draw a solid background color if not handled by CSS
+        // ctx.fillStyle = '#1a0515';
+        // ctx.fillRect(0,0,width,height);
+
+        blobs.forEach(blob => {
+            blob.update(timestamp);
+            blob.draw(ctx, timestamp * config.speed); // Scale time for smoothness
+        });
+
+        requestAnimationFrame(loop);
+    }
+
+    window.addEventListener('resize', () => {
+        resize();
+        // Re-init blobs on drastic resize to keep them framed
+        blobs = [];
+        for (let i = 0; i < config.blobCount; i++) {
+            blobs.push(new Blob());
+        }
+    });
+
+    init();
+
+</script>
+</body>
+</html>
