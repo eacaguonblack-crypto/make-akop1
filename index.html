@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Vector Liquid - Mr. Parker</title>
+    <title>Instant Vector Toon Filter</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js" crossorigin="anonymous"></script>
 
     <style>
@@ -13,262 +13,305 @@
             width: 100%;
             height: 100%;
             overflow: hidden;
-            background-color: #1a0515;
-            font-family: sans-serif;
+            background-color: #FF00FF; /* Fallback pink */
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         }
 
-        canvas {
+        /* The main display canvas */
+        #output_canvas {
             display: block;
             width: 100%;
             height: 100%;
-            transform: scaleX(-1); /* Mirror Mode */
+            /* Mirror the canvas so movement feels natural */
+            transform: scaleX(-1); 
         }
 
-        /* Start Button to unlock audio/video context */
+        /* Hidden video element for raw camera input */
+        video { display: none; }
+
+        /* Start Button Overlay - Required by browsers to allow camera/audio */
         #overlay {
             position: absolute;
             top: 0; left: 0; width: 100%; height: 100%;
-            background: #1a0515;
+            background: linear-gradient(135deg, #ff00cc, #333399);
             display: flex;
             justify-content: center;
             align-items: center;
             flex-direction: column;
-            z-index: 10;
+            z-index: 100;
+            transition: opacity 0.5s ease;
         }
         
         button {
-            padding: 20px 50px;
-            font-size: 2rem;
-            background: #FF00FF;
-            color: #1a0515;
+            padding: 20px 60px;
+            font-size: 1.5rem;
+            font-weight: 900;
+            text-transform: uppercase;
+            background: #FFFFFF;
+            color: #ff00cc;
             border: none;
-            font-weight: bold;
+            border-radius: 50px;
             cursor: pointer;
-            box-shadow: 0 0 20px #FF00FF;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            transition: transform 0.2s ease;
         }
-
-        video { display: none; }
+        button:hover { transform: scale(1.05); }
+        button:active { transform: scale(0.95); }
+        
+        #loading-text {
+            margin-top: 20px;
+            color: white;
+            font-weight: bold;
+            display: none;
+        }
     </style>
 </head>
 <body>
 
     <div id="overlay">
-        <button id="start-btn">ACTIVATE LIQUID MODE</button>
+        <button id="start-btn">Start Cartoon Filter</button>
+        <div id="loading-text">Loading AI Models & Graphics Engine...</div>
     </div>
 
     <video id="input_video" playsinline muted></video>
+    
     <canvas id="output_canvas"></canvas>
 
 <script>
+    // Elements
     const startBtn = document.getElementById('start-btn');
     const overlay = document.getElementById('overlay');
+    const loadingText = document.getElementById('loading-text');
     const videoElement = document.getElementById('input_video');
-    const canvasElement = document.getElementById('output_canvas');
-    const ctx = canvasElement.getContext('2d', { willReadFrequently: true });
+    const canvas = document.getElementById('output_canvas');
+    const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
 
+    // State
     let width, height;
     let segmentationResults = null;
-    let lastTime = 0;
+    let isRunning = false;
+    let time = 0;
 
-    // --- 1. BACKGROUND BLOBS ---
-    const config = {
-        blobCount: 6,
-        colors: ['#FF00FF', '#9400D3', '#C71585'], // Magenta, Violet, Deep Pink
-        speed: 0.002
+    // =============================================
+    // PART 1: THE VECTOR LIQUID BACKGROUND ENGINE
+    // =============================================
+    
+    // Configuration for the pink/magenta blobs matching the reference image
+    const liquidConfig = {
+        colors: ['#FF1493', '#C71585', '#FF00FF', '#DB7093'], // Deep Pink, Med Violet Red, Magenta, Pale Violet Red
+        speed: 0.0015 // How fast theymorph
     };
 
     let blobs = [];
 
-    class Blob {
-        constructor() { this.init(); }
+    class VectorBlob {
+        constructor() {
+            this.init();
+        }
+
         init() {
-            // Spawn anywhere
+            // Position blobs randomly but generally filling the screen
             this.x = Math.random() * width;
             this.y = Math.random() * height;
-            this.radius = Math.random() * (width * 0.2) + 50;
-            this.color = config.colors[Math.floor(Math.random() * config.colors.length)];
-            this.vx = (Math.random() - 0.5) * 2;
-            this.vy = (Math.random() - 0.5) * 2;
+            // Large radius for fluid background look
+            this.radius = Math.random() * (width * 0.4) + (width * 0.2);
+            this.color = liquidConfig.colors[Math.floor(Math.random() * liquidConfig.colors.length)];
             
+            // Movement vector (slow drift)
+            this.vx = (Math.random() - 0.5) * 0.5;
+            this.vy = (Math.random() - 0.5) * 0.5;
+            
+            // Organic shape definitions
             this.points = [];
-            this.numPoints = 7;
+            // 5-7 points creates good organic "blob" shapes
+            this.numPoints = Math.floor(Math.random() * 3) + 5; 
             for (let i = 0; i < this.numPoints; i++) {
                 this.points.push({
                     angle: (Math.PI * 2) / this.numPoints * i,
-                    speed: Math.random() * 0.04 + 0.01,
+                    // Speed at which this specific point on the blob pulses in/out
+                    pulseSpeed: Math.random() * 0.03 + 0.01,
+                    // Random starting phase for the pulse
                     offset: Math.random() * Math.PI * 2,
-                    volatility: Math.random() * 30 + 10
+                    // How drastically the radius changes (the "waviness")
+                    volatility: Math.random() * (this.radius * 0.3) + 20
                 });
             }
         }
+
         update() {
-            this.x += this.vx; this.y += this.vy;
-            if (this.x < -200 || this.x > width + 200) this.vx *= -1;
-            if (this.y < -200 || this.y > height + 200) this.vy *= -1;
+            // Drift
+            this.x += this.vx;
+            this.y += this.vy;
+            // Wrap around screen edges for seamless animation
+            if (this.x < -this.radius) this.x = width + this.radius;
+            if (this.x > width + this.radius) this.x = -this.radius;
+            if (this.y < -this.radius) this.y = height + this.radius;
+            if (this.y > height + this.radius) this.y = -this.radius;
         }
-        draw(ctx, time) {
+
+        // The heart of vector drawing in Canvas
+        draw(ctx, t) {
             ctx.fillStyle = this.color;
             ctx.beginPath();
-            let firstP = this.getPoint(0, time);
+            // Get the first anchor point based on current time
+            const firstP = this.getVectorPoint(0, t);
             ctx.moveTo(firstP.x, firstP.y);
+
+            // Draw smooth bezier curves between the anchor points
             for (let i = 0; i <= this.numPoints; i++) {
-                let p1 = this.getPoint(i % this.numPoints, time);
-                let p2 = this.getPoint((i + 1) % this.numPoints, time);
+                const p1 = this.getVectorPoint(i % this.numPoints, t);
+                const p2 = this.getVectorPoint((i + 1) % this.numPoints, t);
+                // Use the midpoint technique for perfectly smooth organic curves
                 ctx.quadraticCurveTo(p1.x, p1.y, (p1.x + p2.x)/2, (p1.y + p2.y)/2);
             }
+            ctx.closePath();
             ctx.fill();
         }
-        getPoint(i, time) {
-            let p = this.points[i];
-            let r = this.radius + Math.sin(time * p.speed + p.offset) * p.volatility;
-            return { x: this.x + Math.cos(p.angle) * r, y: this.y + Math.sin(p.angle) * r };
+
+        // Calculate the X/Y coordinate of a point on the blob's surface
+        getVectorPoint(index, t) {
+            const p = this.points[index];
+            // Use Sine waves to modulate radius over time
+            const r = this.radius + Math.sin(t * p.pulseSpeed + p.offset) * p.volatility;
+            return {
+                x: this.x + Math.cos(p.angle) * r,
+                y: this.y + Math.sin(p.angle) * r
+            };
         }
     }
 
-    // --- 2. VECTOR PROCESSING HELPER ---
-    // We need a temp canvas to analyze pixel brightness
-    const tempCanvas = document.createElement('canvas');
-    const tempCtx = tempCanvas.getContext('2d', { willReadFrequently: true });
-
+    // Handle window resizing
     function resize() {
         width = window.innerWidth;
         height = window.innerHeight;
-        canvasElement.width = width;
-        canvasElement.height = height;
-        // Use a smaller canvas for pixel processing to keep it fast (downsampling)
-        tempCanvas.width = 320; 
-        tempCanvas.height = 180;
-        
+        canvas.width = width;
+        canvas.height = height;
+        // Re-initialize blobs on resize
         blobs = [];
-        for(let i=0; i<config.blobCount; i++) blobs.push(new Blob());
+        // 5 blobs is enough to fill the screen densely
+        for(let i=0; i<5; i++) blobs.push(new VectorBlob());
     }
     window.addEventListener('resize', resize);
     resize();
 
-    // --- 3. MAIN LOOP ---
-    function loop() {
-        const time = Date.now();
 
-        // A. Draw Background Liquid
+    // =============================================
+    // PART 2: THE MAIN RENDERING LOOP (COMPOSITOR)
+    // =============================================
+    function renderLoop() {
+        if (!isRunning) return;
+        time += 16; // Roughly 60fps increment
+
+        // A. Draw the Liquid Background Layer
         ctx.globalCompositeOperation = 'source-over';
-        ctx.fillStyle = '#1a0515'; // Base Background
+        // Base bright pink color
+        ctx.fillStyle = '#FF69B4'; 
         ctx.fillRect(0, 0, width, height);
 
+        // Draw animated blobs on top
         blobs.forEach(blob => {
             blob.update();
-            blob.draw(ctx, time * config.speed);
+            // Scale time to slow down the animation
+            blob.draw(ctx, time * liquidConfig.speed);
         });
 
-        // B. Draw "Vectorized" User
-        if (segmentationResults) {
+        // B. The "Toon" Person Compositing Pipeline
+        if (segmentationResults && videoElement.readyState >= 2) {
+            // We use the AI mask to define where the person is.
+            
+            // ----- Layer 1: The Vector Shadow (Hard Black Outline) -----
             ctx.save();
-
-            // Step 1: Create a Silhouette (The "Mask")
-            // Draw the user mask to clear the area or set clip? 
-            // We'll draw the solid Dark Purple shape for the user's body first.
-            
-            // Draw Mask to Temp Canvas to scale it up properly
-            // Actually, we can just draw the mask directly to context using 'source-over'
-            // But we want to Color it.
-            
-            // 1. Draw the user shape in DARK PURPLE (Shadow Color)
-            ctx.globalCompositeOperation = 'source-over';
+            // Move the context slightly down and right
+            ctx.translate(8, 8); 
+            // Draw the mask
             ctx.drawImage(segmentationResults.segmentationMask, 0, 0, width, height);
-            
-            // Tint the mask to Dark Purple
+            // Fill the drawn mask entirely with black
             ctx.globalCompositeOperation = 'source-in';
-            ctx.fillStyle = '#2e003e'; // Dark liquid color
+            ctx.fillStyle = '#000000';
             ctx.fillRect(0, 0, width, height);
+            ctx.restore();
+
+            // ----- Layer 2: The "Toon" Colored Person -----
+            ctx.save();
+            // 1. Define the clipping region using the AI mask
+            ctx.globalCompositeOperation = 'source-over';
+            // We draw the mask first...
+            ctx.drawImage(segmentationResults.segmentationMask, 0, 0, width, height);
+            // ...and tell future drawings to only appear *inside* that mask.
+            ctx.globalCompositeOperation = 'source-in';
+
+            // 2. Apply filters to simulate vector/toon colors
+            // High contrast flattens gradients into solid color blocks.
+            // High saturation makes the colors pop like a cartoon.
+            ctx.filter = 'contrast(1.6) saturate(1.4) brightness(1.1)';
             
-            // Now we have a solid dark purple silhouette of you.
-            
-            // Step 2: Add Highlights (The Pink Parts)
-            // We need to know where your face is bright.
-            // Draw the video to the small temp canvas
-            tempCtx.drawImage(videoElement, 0, 0, tempCanvas.width, tempCanvas.height);
-            
-            // Get raw pixel data
-            const frame = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
-            const data = frame.data;
-            
-            // Thresholding: Turn bright pixels White, dark pixels Transparent
-            for (let i = 0; i < data.length; i += 4) {
-                const r = data[i];
-                const g = data[i + 1];
-                const b = data[i + 2];
-                // Simple brightness calculation
-                const brightness = (r + g + b) / 3;
-                
-                if (brightness > 100) { // Highlight Threshold
-                    data[i] = 255;     // R
-                    data[i+1] = 0;     // G
-                    data[i+2] = 255;   // B (Magenta)
-                    data[i+3] = 255;   // Alpha
-                } else {
-                    data[i+3] = 0;     // Transparent
-                }
-            }
-            tempCtx.putImageData(frame, 0, 0);
-            
-            // Draw the highlights ON TOP of the silhouette
-            // But ONLY where the silhouette exists (Masking)
-            ctx.globalCompositeOperation = 'source-atop'; // Only draw on existing pixels (the silhouette)
-            
-            // Draw the thresholded image, scaled up
-            // Use imageSmoothing = false for that jagged "Vector" look? 
-            // Or true for smooth. Let's go smooth.
-            ctx.drawImage(tempCanvas, 0, 0, width, height);
+            // 3. Draw the video feed through the filters into the masked area
+            ctx.drawImage(videoElement, 0, 0, width, height);
             
             ctx.restore();
         }
 
-        requestAnimationFrame(loop);
+        requestAnimationFrame(renderLoop);
     }
-    loop();
 
-    // --- 4. STARTUP ---
+
+    // =============================================
+    // PART 3: INITIALIZATION & HARDWARE ACCESS
+    // =============================================
+    
     startBtn.addEventListener('click', async () => {
-        overlay.style.display = 'none';
-        
-        // Start Cam
-        const stream = await navigator.mediaDevices.getUserMedia({
-            video: { width: 640, height: 360, facingMode: "user" }, // Lower res for speed
-            audio: false
-        });
-        videoElement.srcObject = stream;
-        await videoElement.play();
+        startBtn.style.display = 'none';
+        loadingText.style.display = 'block';
 
-        // Start AI
-        initAI();
-    });
+        try {
+            // 1. Initialize AI
+            const selfieSegmentation = new SelfieSegmentation({locateFile: (file) => {
+                return `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`;
+            }});
 
-    function initAI() {
-        const selfieSegmentation = new SelfieSegmentation({locateFile: (file) => {
-            return `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`;
-        }});
+            selfieSegmentation.setOptions({
+                modelSelection: 1, // 1 = Landscape mode (faster, usually better for this view)
+                selfieMode: false // We mirror via CSS, so set AI to false so it doesn't double mirror
+            });
 
-        selfieSegmentation.setOptions({
-            modelSelection: 1, // 0 = general (slower, better), 1 = landscape (faster)
-            selfieMode: true
-        });
+            selfieSegmentation.onResults(results => {
+                segmentationResults = results;
+                // Once first result arrives, fade out overlay
+                if(overlay.style.opacity !== '0') {
+                     overlay.style.opacity = '0';
+                     setTimeout(() => overlay.style.display = 'none', 500);
+                }
+            });
 
-        selfieSegmentation.onResults(results => {
-            segmentationResults = results;
-        });
+            // 2. Get Camera
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { 
+                    width: { ideal: 1280 }, height: { ideal: 720 }, 
+                    facingMode: "user", frameRate: { ideal: 30 } 
+                },
+                audio: false
+            });
+            videoElement.srcObject = stream;
+            await videoElement.play();
 
-        // Throttle AI to 30 FPS to prevent crashing
-        async function sendToAI() {
-            const now = Date.now();
-            if (now - lastTime >= 33) { // ~30ms = 30fps
+            // 3. Start Systems
+            isRunning = true;
+            renderLoop();
+
+            // 4. Start sending frames to AI continuously
+            async function sendToAI() {
                 if (videoElement.readyState >= 2) {
                     await selfieSegmentation.send({image: videoElement});
                 }
-                lastTime = now;
+                if(isRunning) requestAnimationFrame(sendToAI);
             }
-            requestAnimationFrame(sendToAI);
+            sendToAI();
+
+        } catch (err) {
+            alert("Error starting filter: " + err.message + ". Please ensure camera permission is granted.");
+            location.reload();
         }
-        sendToAI();
-    }
+    });
 
 </script>
 </body>
